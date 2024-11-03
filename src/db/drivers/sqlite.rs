@@ -1,9 +1,14 @@
 use crate::db::{entities, DatabaseError, Retriever};
 
 use sqlite::{Bindable, CursorWithOwnership};
+use std::fs::read_to_string;
 use std::net::Ipv4Addr;
+use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
+
+/// The file to use to re-create the database
+const SCHEMA: &'static str = "db/schema.sql";
 
 /// A concrete driver wrapper that handles SQLite databases
 pub struct SQLite {
@@ -14,8 +19,20 @@ pub struct SQLite {
 impl SQLite {
     /// Create a new instance of SQLite struct
     pub fn new(path: &str) -> SQLite {
+        // Check if the database exists
+        let flag = !Path::new(path).exists();
+        let connection = sqlite::open(path).unwrap();
+
+        // Re-create the database if necessary
+        if !flag {
+            read_to_string(SCHEMA)
+                .unwrap()
+                .lines()
+                .for_each(|line| connection.execute(line).unwrap());
+        }
+
         SQLite {
-            handler: sqlite::open(path).unwrap(),
+            handler: connection,
         }
     }
 
