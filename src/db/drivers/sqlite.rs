@@ -133,6 +133,7 @@ impl Retriever for SQLite {
                         row.read::<entities::UserID, _>("id"),
                         String::from(row.read::<&str, _>("name")),
                         String::from(row.read::<&str, _>("surname")),
+                        String::from(row.read::<&str, _>("password")),
                     )
                 })
                 .collect()),

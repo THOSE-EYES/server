@@ -9,12 +9,18 @@ pub struct User {
     pub id: UserID,
     pub name: String,
     pub surname: String,
+    pub password: String,
 }
 
 impl User {
     /// Create a new User instance
-    pub fn new(id: UserID, name: String, surname: String) -> User {
-        User { id, name, surname }
+    pub fn new(id: UserID, name: String, surname: String, password: String) -> User {
+        User {
+            id,
+            name,
+            surname,
+            password,
+        }
     }
 }
 
