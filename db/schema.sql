@@ -3,6 +3,7 @@ CREATE TABLE users(
     name TEXT NOT NULL,
     surname TEXT NOT NULL,
     password TEXT NOT NULL
+    last_active INTEGER,
 );
 
 CREATE TABLE chats(

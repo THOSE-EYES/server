@@ -195,6 +195,7 @@ impl Retriever for SQLite {
                         String::from(row.read::<&str, _>("name")),
                         String::from(row.read::<&str, _>("surname")),
                         String::from(row.read::<&str, _>("password")),
+                        Duration::from_millis(row.read::<i64, _>("last_active") as u64),
                     )
                 })
                 .collect()),
@@ -202,6 +203,18 @@ impl Retriever for SQLite {
         }
     }
 
+    /// Get the user info
+    ///
+    /// The method reads the list of users, which are avaliable in the
+    /// database and returns the one with the given ID.
+    ///
+    /// # Examples
+    /// ```
+    /// let driver = SQLite::new("data.db");
+    /// for value in driver.get_user(0).unwrap() {
+    ///     println!("User with the name found: {}", value.name);
+    /// }
+    /// ```
     fn get_user(&self, user_id: entities::UserID) -> Result<entities::User, DatabaseError> {
         let query = "SELECT * FROM users WHERE id = :id";
         match self.handler.prepare(query) {
@@ -215,6 +228,9 @@ impl Retriever for SQLite {
                             statement.read::<String, _>("name").unwrap(),
                             statement.read::<String, _>("surname").unwrap(),
                             statement.read::<String, _>("password").unwrap(),
+                            Duration::from_millis(
+                                statement.read::<i64, _>("last_active").unwrap() as u64
+                            ),
                         ))
                     }
                 }
@@ -482,6 +498,36 @@ impl Inserter for SQLite {
             query,
             [
                 (":chat_id", chat_id.to_string().as_str()),
+                (":user_id", user_id.to_string().as_str()),
+            ],
+        )
+    }
+
+    /// Update the last activity timestamp of the user
+    ///
+    /// This method gets the current time as a UNIX timestamp and updates the
+    /// 'last_active' field of the users table for the given user_id
+    ///
+    /// # Examples
+    /// ```
+    /// let driver = drivers::SQLite::new("database.db");
+    /// if let Some(error) = driver.update_last_activity(0) {
+    ///     println!("{}", error.message);
+    /// } else {
+    ///     println!("No errors");
+    /// }
+    /// ```    
+    fn update_last_activity(&self, user_id: entities::UserID) -> Option<DatabaseError> {
+        let query = "UPDATE messages SET last_seen = :timestamp WHERE user_id = :id";
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        self.execute_parameterized(
+            query,
+            [
+                (":timestamp", timestamp.to_string().as_str()),
                 (":user_id", user_id.to_string().as_str()),
             ],
         )

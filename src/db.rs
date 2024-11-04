@@ -31,6 +31,18 @@ pub trait Retriever {
     /// ```
     fn get_users(&self) -> Result<Vec<entities::User>, DatabaseError>;
 
+    /// Get the user info
+    ///
+    /// The method reads the list of users, which are avaliable in the
+    /// database and returns the one with the given ID.
+    ///
+    /// # Examples
+    /// ```
+    /// let driver = SQLite::new("data.db");
+    /// for value in driver.get_user(0).unwrap() {
+    ///     println!("User with the name found: {}", value.name);
+    /// }
+    /// ```
     fn get_user(&self, user_id: entities::UserID) -> Result<entities::User, DatabaseError>;
 
     /// Get a list of chats, available for the user
@@ -177,4 +189,20 @@ pub trait Inserter {
         chat_id: entities::ChatID,
         user_id: entities::UserID,
     ) -> Option<DatabaseError>;
+
+    /// Update the last activity timestamp of the user
+    ///
+    /// This method gets the current time as a UNIX timestamp and updates the
+    /// 'last_active' field of the users table for the given user_id
+    ///
+    /// # Examples
+    /// ```
+    /// let driver = drivers::SQLite::new("database.db");
+    /// if let Some(error) = driver.update_last_activity(0) {
+    ///     println!("{}", error.message);
+    /// } else {
+    ///     println!("No errors");
+    /// }
+    /// ```    
+    fn update_last_activity(&self, user_id: entities::UserID) -> Option<DatabaseError>;
 }
