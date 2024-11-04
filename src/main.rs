@@ -14,6 +14,7 @@ use std::fs::File;
 
 const DB_PATH: &'static str = "/tmp/test.db";
 
+/// Contains all shared state of the server and implements core logic
 pub struct App<T: Retriever + Inserter> {
     storage: Mutex<T>,
     sessions: Mutex<HashMap<i64, i64>>,
@@ -22,6 +23,7 @@ impl<T> App<T>
 where
     T: Retriever + Inserter,
 {
+    /// Returns `user_id` for a valid session of that user
     fn session_validate_str(&self, session_id: &str) -> Option<i64> {
         let Ok(sid) = i64::from_str_radix(session_id, 10) else {
             return None;
@@ -34,6 +36,7 @@ where
         };
         Some(uid_ref.clone())
     }
+    /// Registers a new user to the database
     fn register(&self, name: &str, surname: &str, password: &str) -> Option<()> {
         if let Ok(conn) = self.storage.lock() {
             if let Ok(_) = conn.create_user(name, surname, password) {
@@ -42,6 +45,7 @@ where
         }
         None
     }
+    ///
     fn invite(&self, user_id: i64, chat_id: i64) -> Option<()> {
         if let Ok(conn) = self.storage.lock() {
             if let None = conn.add_user(chat_id, user_id) {
@@ -51,7 +55,8 @@ where
         None
     }
 
-    fn make_chat(&self, title: &str, description: &str) -> Option<i64> {
+    /// Creates a new chatroom in the database
+    fn create_chat(&self, title: &str, description: &str) -> Option<i64> {
         if let Ok(conn) = self.storage.lock() {
             if let Ok(id) = conn.create_chat(title, description) {
                 return Some(id);
@@ -60,6 +65,7 @@ where
         None
     }
 
+    /// Stores a new message in the database
     fn message(&self, uid: i64, chat_id: i64, content: &str) -> Option<()> {
         if let Ok(conn) = self.storage.lock() {
             if let None = conn.store_message(chat_id, uid, content) {
@@ -84,6 +90,8 @@ where
     }
 }
 impl App<SQLite> {
+    /// Creates a new App based on an existing database.
+    /// In case a database file is not found, it is created.
     pub fn new() -> Self {
         let _ = File::create_new(DB_PATH);
         App {
@@ -91,6 +99,8 @@ impl App<SQLite> {
             sessions: Mutex::new(HashMap::new()),
         }
     }
+    /// Creates a new App along with a new database.
+    /// In case a database file is found, it is overwritten.
     pub fn new_debug() -> Self {
         File::create(DB_PATH).unwrap(); // Truncate if exists
         App {
@@ -100,6 +110,9 @@ impl App<SQLite> {
     }
 }
 
+/// [handler] GET /users
+///
+/// Returns: {schema}
 async fn g_users<T: Retriever + Inserter>(State(state): State<Arc<App<T>>>) -> String {
     let mut sb = String::new();
     let db = state.storage.lock().unwrap();
@@ -123,6 +136,9 @@ async fn g_users<T: Retriever + Inserter>(State(state): State<Arc<App<T>>>) -> S
     sb
 }
 
+/// [handler] GET /chats
+///
+/// Returns: {schema}
 async fn g_chats<T: Retriever + Inserter>(
     State(state): State<Arc<App<T>>>,
     Query(params): Query<HashMap<String, String>>,
@@ -155,6 +171,9 @@ async fn g_chats<T: Retriever + Inserter>(
     sb
 }
 
+/// [handler] GET /messages
+///
+/// Returns: {schema}
 async fn g_messages<T: Retriever + Inserter>(
     State(state): State<Arc<App<T>>>,
     Query(params): Query<HashMap<String, String>>,
@@ -187,6 +206,9 @@ async fn g_messages<T: Retriever + Inserter>(
     sb
 }
 
+/// [handler] GET /devices
+///
+/// Returns: {schema}
 async fn g_devices<T: Retriever + Inserter>(
     State(state): State<Arc<App<T>>>,
     Query(params): Query<HashMap<String, String>>,
@@ -215,7 +237,10 @@ async fn g_devices<T: Retriever + Inserter>(
     sb
 }
 
-async fn p_register(
+/// [handler] POST /register
+///
+/// Returns: {schema}
+async fn p_register<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
     Json(payload): Json<serde_json::Value>,
 ) -> &'static str {
@@ -228,7 +253,10 @@ async fn p_register(
     r#"{"status":"Err"}"#
 }
 
-async fn p_login(
+/// [handler] POST /register
+///
+/// Returns: {schema}
+async fn p_login<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
     Json(payload): Json<serde_json::Value>,
 ) -> String {
@@ -244,7 +272,10 @@ async fn p_login(
     String::from(r#"{"status":"Err"}"#)
 }
 
-async fn p_invite(
+/// [handler] POST /invite
+///
+/// Returns: {schema}
+async fn p_invite<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
     Query(params): Query<HashMap<String, String>>,
     Json(payload): Json<serde_json::Value>,
@@ -271,7 +302,10 @@ async fn p_invite(
     r#"{"status":"Err"}"#
 }
 
-async fn p_create(
+/// [handler] POST /create
+///
+/// Returns: {schema}
+async fn p_create<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
     Query(params): Query<HashMap<String, String>>,
     Json(payload): Json<serde_json::Value>,
@@ -285,7 +319,7 @@ async fn p_create(
         let Some(uid) = state.session_validate_str(sid) else {
             return se;
         };
-        if let Some(chat_id) = state.make_chat(title, description) {
+        if let Some(chat_id) = state.create_chat(title, description) {
             state.invite(uid, chat_id);
             return r#"{"status":"Ok"}"#;
         }
@@ -293,7 +327,10 @@ async fn p_create(
     r#"{"status":"Err"}"#
 }
 
-async fn p_message(
+/// [handler] POST /message
+///
+/// Returns: {schema}
+async fn p_message<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
     Query(params): Query<HashMap<String, String>>,
     Json(payload): Json<serde_json::Value>,
@@ -324,11 +361,11 @@ async fn main() {
         .route("/chats", get(g_chats::<SQLite>))
         .route("/messages", get(g_messages::<SQLite>))
         .route("/devices", get(g_devices::<SQLite>))
-        .route("/register", post(p_register))
-        .route("/login", post(p_login))
-        .route("/message", post(p_message))
-        .route("/invite", post(p_invite))
-        .route("/create", post(p_create))
+        .route("/register", post(p_register::<SQLite>))
+        .route("/login", post(p_login::<SQLite>))
+        .route("/message", post(p_message::<SQLite>))
+        .route("/invite", post(p_invite::<SQLite>))
+        .route("/create", post(p_create::<SQLite>))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3030")
         .await
