@@ -9,18 +9,18 @@ use std::string::String;
 use std::sync::{Arc, Mutex};
 
 mod db;
-use db::{drivers::SQLite, Retriever};
+use db::{drivers::SQLite, Inserter, Retriever};
 use std::fs::File;
 
 const DB_PATH: &'static str = "/tmp/test.db";
 
-pub struct App<T: Retriever> {
+pub struct App<T: Retriever + Inserter> {
     storage: Mutex<T>,
     sessions: Mutex<HashMap<i64, i64>>,
 }
 impl<T> App<T>
 where
-    T: Retriever,
+    T: Retriever + Inserter,
 {
     fn session_validate_str(&self, session_id: &str) -> Option<i64> {
         let Ok(sid) = i64::from_str_radix(session_id, 10) else {
@@ -34,10 +34,58 @@ where
         };
         Some(uid_ref.clone())
     }
+    fn register(&self, name: &str, surname: &str, password: &str) -> Option<()> {
+        if let Ok(conn) = self.storage.lock() {
+            if let Ok(_) = conn.create_user(name, surname, password) {
+                return Some(());
+            }
+        }
+        None
+    }
+    fn invite(&self, user_id: i64, chat_id: i64) -> Option<()> {
+        if let Ok(conn) = self.storage.lock() {
+            if let None = conn.add_user(chat_id, user_id) {
+                return Some(());
+            };
+        }
+        None
+    }
+
+    fn make_chat(&self, title: &str, description: &str) -> Option<i64> {
+        if let Ok(conn) = self.storage.lock() {
+            if let Ok(id) = conn.create_chat(title, description) {
+                return Some(id);
+            };
+        }
+        None
+    }
+
+    fn message(&self, uid: i64, chat_id: i64, content: &str) -> Option<()> {
+        if let Ok(conn) = self.storage.lock() {
+            if let None = conn.store_message(chat_id, uid, content) {
+                return Some(());
+            };
+        }
+        None
+    }
+
+    fn login(&self, id: i64, password: &str) -> Option<i64> {
+        if let Ok(conn) = self.storage.lock() {
+            if let Ok(user) = conn.get_user(id) {
+                if user.password.eq(password) {
+                    let session_id = random::<i64>();
+                    let mut sessions = self.sessions.lock().unwrap();
+                    sessions.insert(session_id, id);
+                    return Some(session_id);
+                }
+            }
+        }
+        None
+    }
 }
 impl App<SQLite> {
     pub fn new() -> Self {
-        let r = File::create_new(DB_PATH);
+        let _ = File::create_new(DB_PATH);
         App {
             storage: Mutex::new(SQLite::new(DB_PATH)),
             sessions: Mutex::new(HashMap::new()),
@@ -50,111 +98,9 @@ impl App<SQLite> {
             sessions: Mutex::new(HashMap::new()),
         }
     }
-    fn register(&self, name: &str, surname: &str, password: &str) -> Option<()> {
-        if let Ok(conn) = self.storage.lock() {
-            // Check if {name} exists
-            let mut statement = conn
-                .execute(format!("SELECT * FROM users WHERE name = '{}';", name).as_str())
-                .unwrap();
-            if let Some(Ok(_)) = statement.next() {
-                return None;
-            }
-            // Modify db
-            conn.execute(
-                format!(
-                    "INSERT INTO users VALUES(NULL, '{}', '{}', '{}');",
-                    name, surname, password,
-                )
-                .as_str(),
-            )
-            .unwrap()
-            .next();
-            Some(())
-        } else {
-            None
-        }
-    }
-
-    fn login(&self, id: &str, password: &str) -> Option<i64> {
-        if let Ok(conn) = self.storage.lock() {
-            let mut statement = conn
-                .execute(format!("SELECT id, password FROM users WHERE id = {};", id).as_str())
-                .unwrap();
-            if let Some(Ok(r)) = statement.next() {
-                if r.read::<&str, _>("password").eq(password) {
-                    let session_id = random::<i64>();
-                    let user_id = statement.read::<i64, _>("id").unwrap();
-                    let mut sessions = self.sessions.lock().unwrap();
-                    sessions.insert(session_id, user_id);
-                    return Some(session_id);
-                }
-            }
-        }
-        None
-    }
-
-    fn invite(&self, target_id: i64, chat_id: i64) -> Option<()> {
-        if let Ok(conn) = self.storage.lock() {
-            let mut query = conn
-                .execute(
-                    format!(
-                        "SELECT * FROM invitations WHERE chat_id = {} AND user_id = {};",
-                        chat_id, target_id
-                    )
-                    .as_str(),
-                )
-                .unwrap();
-            if let Some(Ok(_)) = query.next() {
-                return None;
-            }
-            conn.execute(
-                format!(
-                    "INSERT INTO invitations VALUES({}, {});",
-                    target_id, chat_id
-                )
-                .as_str(),
-            )
-            .unwrap()
-            .next();
-        }
-        None
-    }
-
-    fn make_chat(&self, uid: i64, title: &str, description: &str) -> Option<i64> {
-        let Ok(conn) = self.storage.lock() else {
-            return None;
-        };
-        let id = random::<i64>();
-        conn.execute(
-            format!(
-                "INSERT INTO chats VALUES({}, '{}', '{}');",
-                id, title, description
-            )
-            .as_str(),
-        )
-        .unwrap()
-        .next();
-        Some(id)
-    }
-
-    fn message(&self, uid: i64, chat_id: i64, content: &str) -> Option<()> {
-        if let Ok(conn) = self.storage.lock() {
-            conn.execute(
-                format!(
-                    "INSERT INTO messages VALUES('{}', {}, {}, {});",
-                    content, uid, chat_id, 0
-                )
-                .as_str(),
-            )
-            .unwrap()
-            .next();
-            return Some(());
-        }
-        None
-    }
 }
 
-async fn g_users<T: Retriever>(State(state): State<Arc<App<T>>>) -> String {
+async fn g_users<T: Retriever + Inserter>(State(state): State<Arc<App<T>>>) -> String {
     let mut sb = String::new();
     let db = state.storage.lock().unwrap();
     if let Ok(list) = db.get_users() {
@@ -177,7 +123,7 @@ async fn g_users<T: Retriever>(State(state): State<Arc<App<T>>>) -> String {
     sb
 }
 
-async fn g_chats<T: Retriever>(
+async fn g_chats<T: Retriever + Inserter>(
     State(state): State<Arc<App<T>>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> String {
@@ -209,7 +155,7 @@ async fn g_chats<T: Retriever>(
     sb
 }
 
-async fn g_messages<T: Retriever>(
+async fn g_messages<T: Retriever + Inserter>(
     State(state): State<Arc<App<T>>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> String {
@@ -241,7 +187,7 @@ async fn g_messages<T: Retriever>(
     sb
 }
 
-async fn g_devices<T: Retriever>(
+async fn g_devices<T: Retriever + Inserter>(
     State(state): State<Arc<App<T>>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> String {
@@ -286,10 +232,13 @@ async fn p_login(
     State(state): State<Arc<App<SQLite>>>,
     Json(payload): Json<serde_json::Value>,
 ) -> String {
-    if let (Some(id), Some(password)) = (payload["user_id"].as_str(), payload["password"].as_str())
+    if let (Some(id_str), Some(password)) =
+        (payload["user_id"].as_str(), payload["password"].as_str())
     {
-        if let Some(session_id) = state.login(id, password) {
-            return format!(r#"{{"status":"Ok", "session_id": {}}}"#, session_id);
+        if let Ok(id) = i64::from_str_radix(id_str, 10) {
+            if let Some(session_id) = state.login(id, password) {
+                return format!(r#"{{"status":"Ok", "session_id": {}}}"#, session_id);
+            }
         }
     }
     String::from(r#"{"status":"Err"}"#)
@@ -336,7 +285,7 @@ async fn p_create(
         let Some(uid) = state.session_validate_str(sid) else {
             return se;
         };
-        if let Some(chat_id) = state.make_chat(uid, title, description) {
+        if let Some(chat_id) = state.make_chat(title, description) {
             state.invite(uid, chat_id);
             return r#"{"status":"Ok"}"#;
         }
