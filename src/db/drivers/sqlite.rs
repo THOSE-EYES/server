@@ -47,7 +47,7 @@ impl SQLite {
     /// Err(error) => Err(error),
     /// }
     /// ```
-    fn execute(&self, query: &str) -> Result<CursorWithOwnership<'_>, DatabaseError> {
+    pub fn execute(&self, query: &str) -> Result<CursorWithOwnership<'_>, DatabaseError> {
         match self.handler.prepare(query) {
             Ok(statement) => Ok(statement.into_iter()),
             Err(error) => Err(DatabaseError::new(error.message.unwrap())),
