@@ -19,6 +19,7 @@ pub struct App<T: Retriever + Inserter> {
     storage: Mutex<T>,
     sessions: Mutex<HashMap<i64, i64>>,
 }
+
 impl<T> App<T>
 where
     T: Retriever + Inserter,
@@ -85,6 +86,15 @@ where
                     return Some(session_id);
                 }
             }
+        }
+        None
+    }
+
+    fn set_activity(&self, id: i64) -> Option<()> {
+        if let Ok(conn) = self.storage.lock() {
+            if let None = conn.update_last_activity(id) {
+                return Some(());
+            };
         }
         None
     }
@@ -353,6 +363,21 @@ async fn p_message<T: Retriever + Inserter>(
     r#"{"status":"Err", "code":0}"#
 }
 
+async fn p_heartbeat<T: Retriever + Inserter>(
+    State(state): State<Arc<App<SQLite>>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> &'static str {
+    if let Some(sid) = params.get("session_id") {
+        let Some(uid) = state.session_validate_str(sid) else {
+            return r#"{"status":"Err", "code":3}"#;
+        };
+        if let Some(()) = state.set_activity(uid) {
+            return r#"{"status":"Ok"}"#;
+        }
+    }
+    r#"{"status":"Err", "code":0}"#
+}
+
 #[tokio::main]
 async fn main() {
     let app = Arc::new(App::new_debug());
@@ -366,6 +391,7 @@ async fn main() {
         .route("/message", post(p_message::<SQLite>))
         .route("/invite", post(p_invite::<SQLite>))
         .route("/create", post(p_create::<SQLite>))
+        .route("/heartbeat", post(p_heartbeat::<SQLite>))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3030")
         .await
