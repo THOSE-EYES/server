@@ -10,16 +10,24 @@ pub struct User {
     pub name: String,
     pub surname: String,
     pub password: String,
+    pub last_active: Duration,
 }
 
 impl User {
     /// Create a new User instance
-    pub fn new(id: UserID, name: String, surname: String, password: String) -> User {
+    pub fn new(
+        id: UserID,
+        name: String,
+        surname: String,
+        password: String,
+        last_active: Duration,
+    ) -> User {
         User {
             id,
             name,
             surname,
             password,
+            last_active,
         }
     }
 }
