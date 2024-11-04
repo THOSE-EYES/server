@@ -31,6 +31,8 @@ pub trait Retriever {
     /// ```
     fn get_users(&self) -> Result<Vec<entities::User>, DatabaseError>;
 
+    fn get_user(&self, user_id: entities::UserID) -> Result<entities::User, DatabaseError>;
+
     /// Get a list of chats, available for the user
     ///
     /// The method reads the list of all the chats, which are avaliable for the
@@ -103,7 +105,7 @@ pub trait Inserter {
         &self,
         chat_id: entities::ChatID,
         user_id: entities::UserID,
-        content: String,
+        content: &str,
     ) -> Option<DatabaseError>;
 
     /// Create a new user
@@ -127,9 +129,9 @@ pub trait Inserter {
     /// ```
     fn create_user(
         &self,
-        name: String,
-        surname: String,
-        password: String,
+        name: &str,
+        surname: &str,
+        password: &str,
     ) -> Result<entities::UserID, DatabaseError>;
 
     /// Create a new chat
@@ -152,8 +154,8 @@ pub trait Inserter {
     /// ```
     fn create_chat(
         &self,
-        title: String,
-        description: String,
+        title: &str,
+        description: &str,
     ) -> Result<entities::ChatID, DatabaseError>;
 
     /// Add a user to the chat

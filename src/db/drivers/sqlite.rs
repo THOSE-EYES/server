@@ -1,14 +1,13 @@
 use crate::db::{entities, DatabaseError, Inserter, Retriever};
 
 use sqlite::{Bindable, CursorWithOwnership};
-use std::fs::read_to_string;
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
 /// The file to use to re-create the database
-const SCHEMA: &'static str = "db/schema.sql";
+const SCHEMA: &'static str = include_str!("../../../db/schema.sql");
 
 /// A concrete driver wrapper that handles SQLite databases
 pub struct SQLite {
@@ -20,15 +19,12 @@ impl SQLite {
     /// Create a new instance of SQLite struct
     pub fn new(path: &str) -> SQLite {
         // Check if the database exists
-        let flag = Path::new(path).exists();
+        let flag = !Path::new(path).exists();
         let connection = sqlite::open(path).unwrap();
 
         // Re-create the database if necessary
         if !flag {
-            read_to_string(SCHEMA)
-                .unwrap()
-                .lines()
-                .for_each(|line| connection.execute(line).unwrap());
+            connection.execute(SCHEMA).unwrap();
         }
 
         SQLite {
@@ -52,6 +48,14 @@ impl SQLite {
     /// }
     /// ```
     fn prepare(&self, query: &str) -> Result<CursorWithOwnership<'_>, DatabaseError> {
+        match self.handler.prepare(query) {
+            Ok(statement) => Ok(statement.into_iter()),
+            Err(error) => Err(DatabaseError::new(error.message.unwrap())),
+        }
+    }
+
+    /// Duplicate function for external usage TEMPORARY
+    pub fn execute(&self, query: &str) -> Result<CursorWithOwnership<'_>, DatabaseError> {
         match self.handler.prepare(query) {
             Ok(statement) => Ok(statement.into_iter()),
             Err(error) => Err(DatabaseError::new(error.message.unwrap())),
@@ -198,6 +202,28 @@ impl Retriever for SQLite {
         }
     }
 
+    fn get_user(&self, user_id: entities::UserID) -> Result<entities::User, DatabaseError> {
+        let query = "SELECT * FROM users WHERE id = :id";
+        match self.handler.prepare(query) {
+            Ok(mut statement) => match statement.bind((":id", user_id)) {
+                Ok(_) => {
+                    if let Err(error) = statement.next() {
+                        Err(DatabaseError::new(error.message.unwrap()))
+                    } else {
+                        Ok(entities::User::new(
+                            statement.read::<i64, _>("id").unwrap(),
+                            statement.read::<String, _>("name").unwrap(),
+                            statement.read::<String, _>("surname").unwrap(),
+                            statement.read::<String, _>("password").unwrap(),
+                        ))
+                    }
+                }
+                Err(error) => Err(DatabaseError::new(error.message.unwrap())),
+            },
+            Err(error) => Err(DatabaseError::new(error.message.unwrap())),
+        }
+    }
+
     /// Get a list of chats, available for the user
     ///
     /// The method reads the list of all the chats, which are avaliable for the
@@ -322,7 +348,7 @@ impl Inserter for SQLite {
         &self,
         chat_id: entities::ChatID,
         user_id: entities::UserID,
-        content: String,
+        content: &str,
     ) -> Option<DatabaseError> {
         let query = "INSERT INTO messages VALUES(:content, :timestamp, :chat_id, :user_id)";
         let timestamp = SystemTime::now()
@@ -333,7 +359,7 @@ impl Inserter for SQLite {
         self.execute_parameterized(
             query,
             [
-                (":content", content.as_str()),
+                (":content", content),
                 (":timestamp", &timestamp.to_string()),
                 (":chat_id", &chat_id.to_string()),
                 (":user_id", &user_id.to_string()),
@@ -362,18 +388,18 @@ impl Inserter for SQLite {
     /// ```
     fn create_user(
         &self,
-        name: String,
-        surname: String,
-        password: String,
+        name: &str,
+        surname: &str,
+        password: &str,
     ) -> Result<entities::UserID, DatabaseError> {
         let query =
         "INSERT INTO users(name, surname, password) VALUES(:name,:surname,:password) RETURNING id";
 
         match self.handler.prepare(query) {
             Ok(mut statement) => match statement.bind_iter([
-                (":name", name.as_str()),
-                (":surname", surname.as_str()),
-                (":password", password.as_str()),
+                (":name", name),
+                (":surname", surname),
+                (":password", password),
             ]) {
                 Ok(_) => {
                     if let Err(error) = statement.next() {
@@ -408,26 +434,25 @@ impl Inserter for SQLite {
     /// ```
     fn create_chat(
         &self,
-        title: String,
-        description: String,
+        title: &str,
+        description: &str,
     ) -> Result<entities::ChatID, DatabaseError> {
         let query =
             "INSERT INTO chats(title, description) VALUES(:title,:description) RETURNING id";
 
         match self.handler.prepare(query) {
-            Ok(mut statement) => match statement.bind_iter([
-                (":title", title.as_str()),
-                (":description", description.as_str()),
-            ]) {
-                Ok(_) => {
-                    if let Err(error) = statement.next() {
-                        Err(DatabaseError::new(error.message.unwrap()))
-                    } else {
-                        Ok(statement.read::<i64, _>(0).unwrap())
+            Ok(mut statement) => {
+                match statement.bind_iter([(":title", title), (":description", description)]) {
+                    Ok(_) => {
+                        if let Err(error) = statement.next() {
+                            Err(DatabaseError::new(error.message.unwrap()))
+                        } else {
+                            Ok(statement.read::<i64, _>(0).unwrap())
+                        }
                     }
+                    Err(error) => Err(DatabaseError::new(error.message.unwrap())),
                 }
-                Err(error) => Err(DatabaseError::new(error.message.unwrap())),
-            },
+            }
             Err(error) => Err(DatabaseError::new(error.message.unwrap())),
         }
     }

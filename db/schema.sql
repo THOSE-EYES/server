@@ -28,4 +28,5 @@ CREATE TABLE devices(
     name TEXT,
     user_id INTEGER,
     is_active INTEGER
-);
+); 
+
