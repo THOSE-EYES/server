@@ -13,9 +13,9 @@ CREATE TABLE chats(
 
 CREATE TABLE messages(
     content BLOB NOT NULL,
-    user_id INTEGER,
+    timestamp INTEGER,
     chat_id INTEGER,
-    timestamp INTEGER
+    user_id INTEGER
 );
 
 CREATE TABLE invitations(
