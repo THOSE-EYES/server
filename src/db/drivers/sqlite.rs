@@ -1,11 +1,11 @@
-use crate::db::{entities, DatabaseError, Retriever};
+use crate::db::{entities, DatabaseError, Inserter, Retriever};
 
 use sqlite::{Bindable, CursorWithOwnership};
 use std::fs::read_to_string;
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// The file to use to re-create the database
 const SCHEMA: &'static str = "db/schema.sql";
@@ -44,14 +44,14 @@ impl SQLite {
     ///
     /// # Examples
     /// ```
-    /// match self.execute("SELECT id FROM users") {
+    /// match self.prepare("SELECT id FROM users") {
     /// Ok(iter) => Ok(iter
     ///     .map(|row| row.unwrap().read::<UserID, _>("id"))
     ///     .collect()),
     /// Err(error) => Err(error),
     /// }
     /// ```
-    fn execute(&self, query: &str) -> Result<CursorWithOwnership<'_>, DatabaseError> {
+    fn prepare(&self, query: &str) -> Result<CursorWithOwnership<'_>, DatabaseError> {
         match self.handler.prepare(query) {
             Ok(statement) => Ok(statement.into_iter()),
             Err(error) => Err(DatabaseError::new(error.message.unwrap())),
@@ -66,7 +66,7 @@ impl SQLite {
     ///
     /// # Examples
     /// ```
-    /// match self.execute_parameterized(
+    /// match self.prepare_parameterized(
     /// "SELECT * FROM invitations WHERE user_id = :id",
     /// [(":id", user_id)],
     /// ) {
@@ -76,7 +76,7 @@ impl SQLite {
     /// Err(error) => Err(error),
     /// }
     /// ```
-    fn execute_parameterized<T, U>(
+    fn prepare_parameterized<T, U>(
         &self,
         query: &str,
         bind_value: T,
@@ -91,6 +91,46 @@ impl SQLite {
                 Err(error) => Err(DatabaseError::new(error.message.unwrap())),
             },
             Err(error) => Err(DatabaseError::new(error.message.unwrap())),
+        }
+    }
+
+    /// Execute a parameterized query without returning results
+    ///
+    /// This method prepares a statement based on the query it receives from
+    /// the user, runs it with the given parameters and returns errors if any.
+    ///
+    /// # Examples
+    /// ```
+    /// let query = "INSERT INTO messages VALUES(:content, :timestamp, :chat_id, :user_id)";
+    /// let timestamp = SystemTime::now()
+    ///     .duration_since(SystemTime::UNIX_EPOCH)
+    ///     .unwrap()
+    ///     .as_millis();
+    ///
+    /// self.execute_parameterized(
+    ///     query,
+    ///     [
+    ///         (":content", content.as_str()),
+    ///         (":timestamp", &timestamp.to_string()),
+    ///         (":chat_id", &chat_id.to_string()),
+    ///         (":user_id", &user_id.to_string()),
+    ///     ],
+    /// )
+    /// ```
+    fn execute_parameterized<T, U>(&self, query: &str, bind_value: T) -> Option<DatabaseError>
+    where
+        T: IntoIterator<Item = U>,
+        U: Bindable,
+    {
+        match self.handler.prepare(query) {
+            Ok(mut statement) => match statement.bind_iter(bind_value) {
+                Ok(_) => match statement.next() {
+                    Ok(_) => None,
+                    Err(error) => Some(DatabaseError::new(error.message.unwrap())),
+                },
+                Err(error) => Some(DatabaseError::new(error.message.unwrap())),
+            },
+            Err(error) => Some(DatabaseError::new(error.message.unwrap())),
         }
     }
 
@@ -141,7 +181,7 @@ impl Retriever for SQLite {
     /// }
     /// ```
     fn get_users(&self) -> Result<Vec<entities::User>, DatabaseError> {
-        match self.execute("SELECT * FROM users") {
+        match self.prepare("SELECT * FROM users") {
             Ok(iter) => Ok(iter
                 .map(|result| {
                     let row = result.unwrap();
@@ -172,7 +212,7 @@ impl Retriever for SQLite {
     /// }
     /// ```
     fn get_chats(&self, user_id: entities::UserID) -> Result<Vec<entities::Chat>, DatabaseError> {
-        match self.execute_parameterized(
+        match self.prepare_parameterized(
             "SELECT * FROM invitations WHERE user_id = :id",
             [(":id", user_id)],
         ) {
@@ -205,7 +245,7 @@ impl Retriever for SQLite {
         &self,
         chat_id: entities::ChatID,
     ) -> Result<Vec<entities::Message>, DatabaseError> {
-        match self.execute_parameterized(
+        match self.prepare_parameterized(
             "SELECT * FROM messages WHERE chat_id = :id",
             [(":id", chat_id)],
         ) {
@@ -242,7 +282,7 @@ impl Retriever for SQLite {
         &self,
         user_id: entities::UserID,
     ) -> Result<Vec<entities::Device>, DatabaseError> {
-        match self.execute_parameterized(
+        match self.prepare_parameterized(
             "SELECT * FROM devices WHERE user_id = :id",
             [(":id", user_id)],
         ) {
@@ -260,5 +300,165 @@ impl Retriever for SQLite {
                 .collect()),
             Err(error) => Err(error),
         }
+    }
+}
+
+impl Inserter for SQLite {
+    /// Store the message in the database
+    ///
+    /// This method stores the message with the given content in the chat
+    /// that the user sent.
+    ///
+    /// # Examples
+    /// ```
+    /// let driver = drivers::SQLite::new("database.db");
+    /// if let Some(error) = driver.store_message(0, 0, "B".to_string()) {
+    ///     println!("{}", error.message);
+    /// } else {
+    ///     println!("No errors");
+    /// }
+    /// ```
+    fn store_message(
+        &self,
+        chat_id: entities::ChatID,
+        user_id: entities::UserID,
+        content: String,
+    ) -> Option<DatabaseError> {
+        let query = "INSERT INTO messages VALUES(:content, :timestamp, :chat_id, :user_id)";
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        self.execute_parameterized(
+            query,
+            [
+                (":content", content.as_str()),
+                (":timestamp", &timestamp.to_string()),
+                (":chat_id", &chat_id.to_string()),
+                (":user_id", &user_id.to_string()),
+            ],
+        )
+    }
+
+    /// Create a new user
+    ///
+    /// This method updates the database with the user, defined by the
+    /// parameters supplied to the method. The ID of the user is returned.
+    ///
+    /// # Examples
+    /// ```
+    /// let driver = drivers::SQLite::new("database.db");
+    /// println!(
+    ///     "User with the ID {} created.",
+    ///     driver
+    ///         .create_user(
+    ///             "name".to_string(),
+    ///             "surname".to_string(),
+    ///             "password".to_string()
+    ///         )
+    ///         .unwrap()
+    /// );
+    /// ```
+    fn create_user(
+        &self,
+        name: String,
+        surname: String,
+        password: String,
+    ) -> Result<entities::UserID, DatabaseError> {
+        let query =
+        "INSERT INTO users(name, surname, password) VALUES(:name,:surname,:password) RETURNING id";
+
+        match self.handler.prepare(query) {
+            Ok(mut statement) => match statement.bind_iter([
+                (":name", name.as_str()),
+                (":surname", surname.as_str()),
+                (":password", password.as_str()),
+            ]) {
+                Ok(_) => {
+                    if let Err(error) = statement.next() {
+                        Err(DatabaseError::new(error.message.unwrap()))
+                    } else {
+                        Ok(statement.read::<i64, _>(0).unwrap())
+                    }
+                }
+                Err(error) => Err(DatabaseError::new(error.message.unwrap())),
+            },
+            Err(error) => Err(DatabaseError::new(error.message.unwrap())),
+        }
+    }
+
+    /// Create a new chat
+    ///
+    /// This method updates the database with the chat, defined by the
+    /// parameters supplied to the method. The ID of the chat is returned.
+    ///
+    /// # Examples
+    /// ```
+    /// let driver = drivers::SQLite::new("database.db");
+    /// println!(
+    ///     "Chat with the ID {} created.",
+    ///     driver
+    ///         .create_chat(
+    ///             "title".to_string(),
+    ///             "description".to_string(),
+    ///         )
+    ///         .unwrap()
+    /// );
+    /// ```
+    fn create_chat(
+        &self,
+        title: String,
+        description: String,
+    ) -> Result<entities::ChatID, DatabaseError> {
+        let query =
+            "INSERT INTO chats(title, description) VALUES(:title,:description) RETURNING id";
+
+        match self.handler.prepare(query) {
+            Ok(mut statement) => match statement.bind_iter([
+                (":title", title.as_str()),
+                (":description", description.as_str()),
+            ]) {
+                Ok(_) => {
+                    if let Err(error) = statement.next() {
+                        Err(DatabaseError::new(error.message.unwrap()))
+                    } else {
+                        Ok(statement.read::<i64, _>(0).unwrap())
+                    }
+                }
+                Err(error) => Err(DatabaseError::new(error.message.unwrap())),
+            },
+            Err(error) => Err(DatabaseError::new(error.message.unwrap())),
+        }
+    }
+
+    /// Add a user to the chat
+    ///
+    /// This method adds the user with the given ID to the chat with the given
+    /// ID by writing new data to the database.
+    ///
+    /// # Examples
+    /// ```
+    /// let driver = drivers::SQLite::new("database.db");
+    /// if let Some(error) = driver.add_user(0, 0) {
+    ///     println!("{}", error.message);
+    /// } else {
+    ///     println!("No errors");
+    /// }
+    /// ```
+    fn add_user(
+        &self,
+        chat_id: entities::ChatID,
+        user_id: entities::UserID,
+    ) -> Option<DatabaseError> {
+        let query = "INSERT INTO invitations VALUES(:chat_id, :user_id)";
+
+        self.execute_parameterized(
+            query,
+            [
+                (":chat_id", chat_id.to_string().as_str()),
+                (":user_id", user_id.to_string().as_str()),
+            ],
+        )
     }
 }
