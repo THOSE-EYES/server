@@ -18,6 +18,23 @@ pub struct App<T: Retriever> {
     storage: Mutex<T>,
     sessions: Mutex<HashMap<i64, i64>>,
 }
+impl<T> App<T>
+where
+    T: Retriever,
+{
+    fn session_validate_str(&self, session_id: &str) -> Option<i64> {
+        let Ok(sid) = i64::from_str_radix(session_id, 10) else {
+            return None;
+        };
+        let Ok(sessions) = self.sessions.lock() else {
+            return None;
+        };
+        let Some(uid_ref) = sessions.get(&sid) else {
+            return None;
+        };
+        Some(uid_ref.clone())
+    }
+}
 impl App<SQLite> {
     pub fn new() -> Self {
         let r = File::create_new(DB_PATH);
@@ -33,7 +50,7 @@ impl App<SQLite> {
             sessions: Mutex::new(HashMap::new()),
         }
     }
-    pub fn register(&self, name: &str, surname: &str, password: &str) -> Option<()> {
+    fn register(&self, name: &str, surname: &str, password: &str) -> Option<()> {
         if let Ok(conn) = self.storage.lock() {
             // Check if {name} exists
             let mut statement = conn
@@ -58,7 +75,7 @@ impl App<SQLite> {
         }
     }
 
-    pub fn login(&self, id: &str, password: &str) -> Option<i64> {
+    fn login(&self, id: &str, password: &str) -> Option<i64> {
         if let Ok(conn) = self.storage.lock() {
             let mut statement = conn
                 .execute(format!("SELECT id, password FROM users WHERE id = {};", id).as_str())
@@ -76,7 +93,7 @@ impl App<SQLite> {
         None
     }
 
-    pub fn invite(&self, target_id: i64, chat_id: i64) -> Option<()> {
+    fn invite(&self, target_id: i64, chat_id: i64) -> Option<()> {
         if let Ok(conn) = self.storage.lock() {
             let mut query = conn
                 .execute(
@@ -103,7 +120,7 @@ impl App<SQLite> {
         None
     }
 
-    pub fn make_chat(&self, uid: i64, title: &str, description: &str) -> Option<i64> {
+    fn make_chat(&self, uid: i64, title: &str, description: &str) -> Option<i64> {
         let Ok(conn) = self.storage.lock() else {
             return None;
         };
@@ -120,7 +137,7 @@ impl App<SQLite> {
         Some(id)
     }
 
-    pub fn message(&self, uid: i64, chat_id: i64, content: &str) -> Option<()> {
+    fn message(&self, uid: i64, chat_id: i64, content: &str) -> Option<()> {
         if let Ok(conn) = self.storage.lock() {
             conn.execute(
                 format!(
@@ -166,18 +183,14 @@ async fn g_chats<T: Retriever>(
 ) -> String {
     let mut sb = String::new();
     let db = state.storage.lock().unwrap();
-    let sessions = state.sessions.lock().unwrap();
     let se = String::from(r#"{"status":"Err"}"#);
-    let Some(sid_str) = params.get("session_id") else {
+    let Some(sid) = params.get("session_id") else {
         return se;
     };
-    let Ok(sid) = i64::from_str_radix(sid_str.as_str(), 10) else {
+    let Some(uid) = state.session_validate_str(sid) else {
         return se;
     };
-    let Some(uid) = sessions.get(&sid) else {
-        return se;
-    };
-    if let Ok(list) = db.get_chats(*uid) {
+    if let Ok(list) = db.get_chats(uid) {
         sb.push_str(r#"{"chats":["#);
         for e in &list {
             sb.push_str(
@@ -234,18 +247,14 @@ async fn g_devices<T: Retriever>(
 ) -> String {
     let mut sb = String::new();
     let db = state.storage.lock().unwrap();
-    let sessions = state.sessions.lock().unwrap();
     let se = String::from(r#"{"status":"Err"}"#);
-    let Some(sid_str) = params.get("session_id") else {
+    let Some(sid) = params.get("session_id") else {
         return se;
     };
-    let Ok(sid) = i64::from_str_radix(sid_str.as_str(), 10) else {
+    let Some(uid) = state.session_validate_str(sid) else {
         return se;
     };
-    let Some(uid) = sessions.get(&sid) else {
-        return se;
-    };
-    if let Ok(list) = db.get_devices(*uid) {
+    if let Ok(list) = db.get_devices(uid) {
         sb.push_str(r#"{"devices":["#);
         for e in &list {
             sb.push_str(
@@ -291,19 +300,14 @@ async fn p_invite(
     Query(params): Query<HashMap<String, String>>,
     Json(payload): Json<serde_json::Value>,
 ) -> &'static str {
-    if let (Some(sid_str), Some(target_str), Some(chat_id_str)) = (
+    if let (Some(sid), Some(target_str), Some(chat_id_str)) = (
         params.get("session_id"),
         payload["user_id"].as_str(),
         payload["chat_id"].as_str(),
     ) {
         let se = r#"{"status":"Err"}"#;
-        let Ok(sid) = i64::from_str_radix(sid_str.as_str(), 10) else {
+        let Some(_) = state.session_validate_str(sid) else {
             return se;
-        };
-        let _ = {
-            let sessions = state.sessions.lock().unwrap();
-            let uid_ref = sessions.get(&sid).unwrap_or(&0);
-            uid_ref.clone()
         };
         let Ok(target) = i64::from_str_radix(target_str, 10) else {
             return se;
@@ -323,25 +327,15 @@ async fn p_create(
     Query(params): Query<HashMap<String, String>>,
     Json(payload): Json<serde_json::Value>,
 ) -> &'static str {
-    if let (Some(sid_str), Some(title), Some(description)) = (
+    if let (Some(sid), Some(title), Some(description)) = (
         params.get("session_id"),
         payload["title"].as_str(),
         payload["description"].as_str(),
     ) {
         let se = r#"{"status":"Err"}"#;
-        let Ok(sid) = i64::from_str_radix(sid_str.as_str(), 10) else {
+        let Some(uid) = state.session_validate_str(sid) else {
             return se;
         };
-        let uid = {
-            let Ok(sessions) = state.sessions.lock() else {
-                return se;
-            };
-            let Some(uid_ref) = sessions.get(&sid) else {
-                return se;
-            };
-            uid_ref.clone()
-        };
-
         if let Some(chat_id) = state.make_chat(uid, title, description) {
             state.invite(uid, chat_id);
             return r#"{"status":"Ok"}"#;
@@ -355,22 +349,13 @@ async fn p_message(
     Query(params): Query<HashMap<String, String>>,
     Json(payload): Json<serde_json::Value>,
 ) -> &'static str {
-    if let (Some(sid_str), Some(chat_id_str), Some(content)) = (
+    if let (Some(sid), Some(chat_id_str), Some(content)) = (
         params.get("session_id"),
         payload["chat_id"].as_str(),
         payload["content"].as_str(),
     ) {
-        let Ok(sid) = i64::from_str_radix(sid_str.as_str(), 10) else {
-            return r#"{"status":"Err", "code":1}"#;
-        };
-        let uid = {
-            let Ok(sessions) = state.sessions.lock() else {
-                return r#"{"status":"Err", "code":2}"#;
-            };
-            let Some(uid_ref) = sessions.get(&sid) else {
-                return r#"{"status":"Err", "code":3}"#;
-            };
-            *uid_ref
+        let Some(uid) = state.session_validate_str(sid) else {
+            return r#"{"status":"Err", "code":3}"#;
         };
         let Ok(chat_id) = i64::from_str_radix(chat_id_str, 10) else {
             return r#"{"status":"Err", "code":4}"#;
