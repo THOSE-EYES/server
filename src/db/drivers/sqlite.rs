@@ -54,6 +54,14 @@ impl SQLite {
         }
     }
 
+    /// Duplicate function for external usage TEMPORARY
+    pub fn execute(&self, query: &str) -> Result<CursorWithOwnership<'_>, DatabaseError> {
+        match self.handler.prepare(query) {
+            Ok(statement) => Ok(statement.into_iter()),
+            Err(error) => Err(DatabaseError::new(error.message.unwrap())),
+        }
+    }
+
     /// Execute a parameterized query and return the results
     ///
     /// This method prepares a statement based on the query it receives from
