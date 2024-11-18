@@ -195,6 +195,7 @@ impl Retriever for SQLite {
                         String::from(row.read::<&str, _>("name")),
                         String::from(row.read::<&str, _>("surname")),
                         String::from(row.read::<&str, _>("password")),
+                        String::from(row.read::<&str, _>("salt")),
                         row.read::<i64, _>("last_active"),
                     )
                 })
@@ -228,6 +229,7 @@ impl Retriever for SQLite {
                             statement.read::<String, _>("name").unwrap(),
                             statement.read::<String, _>("surname").unwrap(),
                             statement.read::<String, _>("password").unwrap(),
+                            statement.read::<String, _>("salt").unwrap(),
                             statement.read::<i64, _>("last_active").unwrap(),
                         ))
                     }
@@ -405,15 +407,17 @@ impl Inserter for SQLite {
         name: &str,
         surname: &str,
         password: &str,
+        salt: &str,
     ) -> Result<entities::UserID, DatabaseError> {
         let query =
-        "INSERT INTO users(name, surname, password, last_active) VALUES(:name,:surname,:password,unixepoch()) RETURNING id";
+        "INSERT INTO users(name, surname, password, salt, last_active) VALUES(:name,:surname,:password,:salt,unixepoch()) RETURNING id";
 
         match self.handler.prepare(query) {
             Ok(mut statement) => match statement.bind_iter([
                 (":name", name),
                 (":surname", surname),
                 (":password", password),
+                (":salt", salt),
             ]) {
                 Ok(_) => {
                     if let Err(error) = statement.next() {

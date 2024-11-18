@@ -7,9 +7,9 @@ use axum::{
 };
 use rand::random;
 use serde_json::json;
-use std::collections::HashMap;
-use std::string::String;
 use std::sync::{Arc, Mutex};
+use std::{collections::HashMap, time::SystemTime};
+use std::{hash::Hash, string::String};
 
 mod db;
 mod utils;
@@ -45,15 +45,35 @@ where
     /// Registers a new user to the database
     fn register(&self, name: &str, surname: &str, password: &str) -> Option<i64> {
         if let Ok(conn) = self.storage.lock() {
-            let phash = blake3::hash(password.as_bytes()).to_hex();
-            if let Ok(id) = conn.create_user(name, surname, phash.as_str()) {
+            let salt = format!("{:x}", random::<u64>());
+            let mut saltpw = salt.clone();
+            saltpw.push_str(password);
+            let phash = blake3::hash(saltpw.as_bytes()).to_hex();
+            if let Ok(id) = conn.create_user(name, surname, phash.as_str(), salt.as_str()) {
                 conn.update_last_activity(id);
                 return Some(id);
             }
         }
         None
     }
-    ///
+
+    fn login(&self, id: i64, password: &str) -> Option<i64> {
+        if let Ok(conn) = self.storage.lock() {
+            if let Ok(user) = conn.get_user(id) {
+                let mut saltpw = user.salt.clone();
+                saltpw.push_str(password);
+                let phash = blake3::hash(saltpw.as_bytes()).to_hex();
+                if user.password.eq(phash.as_str()) {
+                    let session_id = random::<i32>() as i64;
+                    let mut sessions = self.sessions.lock().unwrap();
+                    sessions.insert(session_id, (unixepoch(), id));
+                    return Some(session_id);
+                }
+            }
+        }
+        None
+    }
+
     fn invite(&self, user_id: i64, chat_id: i64) -> Option<()> {
         if let Ok(conn) = self.storage.lock() {
             if let None = conn.add_user(chat_id, user_id) {
@@ -62,8 +82,8 @@ where
         }
         None
     }
-
     /// Creates a new chatroom in the database
+
     fn create_chat(&self, title: &str, description: &str) -> Option<i64> {
         if let Ok(conn) = self.storage.lock() {
             if let Ok(id) = conn.create_chat(title, description) {
@@ -72,8 +92,8 @@ where
         }
         None
     }
-
     /// Stores a new message in the database
+
     fn message(&self, uid: i64, chat_id: i64, content: &str) -> Option<()> {
         if let Ok(conn) = self.storage.lock() {
             if let None = conn.store_message(chat_id, uid, content) {
@@ -82,22 +102,7 @@ where
         }
         None
     }
-
-    fn login(&self, id: i64, password: &str) -> Option<i64> {
-        if let Ok(conn) = self.storage.lock() {
-            if let Ok(user) = conn.get_user(id) {
-                let phash = blake3::hash(password.as_bytes()).to_hex();
-                if user.password.eq(phash.as_str()) {
-                    let session_id = random::<i32>() as i64;
-                    let mut sessions = self.sessions.lock().unwrap();
-                    sessions.insert(session_id, (utils::unixepoch(), id));
-                    return Some(session_id);
-                }
-            }
-        }
-        None
-    }
-
+  
     fn set_activity(&self, sid: i64) -> Option<()> {
         if let Ok(mut sessions) = self.sessions.lock() {
             if let Some(v) = sessions.get_mut(&sid) {
