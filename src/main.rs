@@ -45,7 +45,8 @@ where
     /// Registers a new user to the database
     fn register(&self, name: &str, surname: &str, password: &str) -> Option<i64> {
         if let Ok(conn) = self.storage.lock() {
-            if let Ok(id) = conn.create_user(name, surname, password) {
+            let phash = blake3::hash(password.as_bytes()).to_hex();
+            if let Ok(id) = conn.create_user(name, surname, phash.as_str()) {
                 conn.update_last_activity(id);
                 return Some(id);
             }
@@ -85,7 +86,8 @@ where
     fn login(&self, id: i64, password: &str) -> Option<i64> {
         if let Ok(conn) = self.storage.lock() {
             if let Ok(user) = conn.get_user(id) {
-                if user.password.eq(password) {
+                let phash = blake3::hash(password.as_bytes()).to_hex();
+                if user.password.eq(phash.as_str()) {
                     let session_id = random::<i32>() as i64;
                     let mut sessions = self.sessions.lock().unwrap();
                     sessions.insert(session_id, (utils::unixepoch(), id));
@@ -199,16 +201,26 @@ async fn g_chats<T: Retriever + Inserter>(
 /// [handler] GET /messages
 ///
 /// Returns: {schema}
-async fn g_messages<T: Retriever + Inserter>(
+async fn g_messages_sec<T: Retriever + Inserter>(
     State(state): State<Arc<App<T>>>,
     Query(params): Query<HashMap<String, String>>,
+    Json(payload): Json<serde_json::Value>,
 ) -> Response {
     let db = state.storage.lock().unwrap();
-    let Some(cid_str) = params.get("chat_id") else {
+    let Some(sid_str) = params.get("session_id") else {
         return (StatusCode::BAD_REQUEST).into_response();
     };
-    let Ok(cid) = i64::from_str_radix(cid_str.as_str(), 10) else {
+    let Some(uid) = state.session_validate_str(sid_str) else {
+        return (StatusCode::UNAUTHORIZED).into_response();
+    };
+    let Some(cid) = payload["chat_id"].as_i64() else {
         return (StatusCode::BAD_REQUEST).into_response();
+    };
+    let Ok(chats) = db.get_chats(uid) else {
+        return (StatusCode::NOT_FOUND).into_response();
+    };
+    let Some(_) = chats.iter().find(|e| e.id == cid) else {
+        return (StatusCode::NOT_FOUND).into_response();
     };
     if let Ok(list) = db.get_messages(cid) {
         return (StatusCode::OK, Json(json!({"messages": list}))).into_response();
@@ -272,11 +284,18 @@ async fn p_login<T: Retriever + Inserter>(
     (StatusCode::UNAUTHORIZED).into_response()
 }
 
-async fn g_active<T: Retriever + Inserter>(
+async fn g_active_sec<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
+    Query(params): Query<HashMap<String, String>>,
     Json(payload): Json<serde_json::Value>,
 ) -> Response {
-    if let Some(id) = payload["user_id"].as_i64() {
+    if let (Some(sid_str), Some(id)) = (params.get("session_id"), payload["user_id"].as_i64()) {
+        let Some(_) = state.session_validate_str(sid_str) else {
+            return (StatusCode::UNAUTHORIZED).into_response();
+        };
+        let Ok(_) = i64::from_str_radix(sid_str, 10) else {
+            return (StatusCode::BAD_REQUEST).into_response();
+        };
         if let Some(b) = state.is_active(id) {
             return (StatusCode::OK, Json(json!({"active": b}))).into_response();
         }
@@ -401,8 +420,8 @@ async fn main() {
         .route("/users", get(g_users::<SQLite>))
         .route("/getUsers", get(g_users::<SQLite>))
         .route("/chats", get(g_chats::<SQLite>))
-        .route("/messages", get(g_messages::<SQLite>))
-        .route("/messages", post(g_messages::<SQLite>))
+        .route("/messages", get(g_messages_sec::<SQLite>))
+        .route("/messages", post(g_messages_sec::<SQLite>))
         .route("/devices", get(g_devices::<SQLite>))
         .route("/register", post(p_register::<SQLite>))
         .route("/login", post(p_login::<SQLite>))
@@ -413,8 +432,8 @@ async fn main() {
         .route("/create", post(p_create::<SQLite>))
         .route("/heartbeat", post(p_heartbeat::<SQLite>))
         .route("/sendActivity", post(p_heartbeat::<SQLite>))
-        .route("/getActivity", get(g_active::<SQLite>))
-        .route("/getActivity", post(g_active::<SQLite>))
+        .route("/getActivity", get(g_active_sec::<SQLite>))
+        .route("/getActivity", post(g_active_sec::<SQLite>))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3030").await.unwrap();
     axum::serve(listener, router).await.unwrap();
