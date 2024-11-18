@@ -36,7 +36,7 @@ if (import.meta.main) {
     content: "Hello!",
   });
   // Query messages in G1
-  await etry("/messages", { session_id: sid1, chat_id: cid1 }, undefined);
+  await etry("/messages", { session_id: sid1 }, { chat_id: cid1 });
   // Invite U2 to G1
   await etry("/invite", { session_id: sid1 }, { chat_id: cid1, user_id: 2 });
   // Login as U2 + save session_id
@@ -50,13 +50,13 @@ if (import.meta.main) {
     content: "Hi :)",
   });
   // Query messages in G1
-  await etry("/messages", { session_id: sid2, chat_id: cid1 }, undefined);
+  await etry("/messages", { session_id: sid2 }, { chat_id: cid1 });
   // Query U1's activity
-  await etry("/getActivity", undefined, { user_id: 1 });
+  await etry("/getActivity", { session_id: sid2 }, { user_id: 1 });
   // Logout as U1
   await etry("/logout", { session_id: sid1 }, undefined);
   // Query U1's activity
-  await etry("/getActivity", undefined, { user_id: 1 });
+  await etry("/getActivity", { session_id: sid2 }, { user_id: 1 });
   
   server.kill("SIGTERM");
 }
