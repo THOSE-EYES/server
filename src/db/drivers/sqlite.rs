@@ -195,7 +195,7 @@ impl Retriever for SQLite {
                         String::from(row.read::<&str, _>("name")),
                         String::from(row.read::<&str, _>("surname")),
                         String::from(row.read::<&str, _>("password")),
-                        Duration::from_millis(row.read::<i64, _>("last_active") as u64),
+                        row.read::<i64, _>("last_active"),
                     )
                 })
                 .collect()),
@@ -228,9 +228,7 @@ impl Retriever for SQLite {
                             statement.read::<String, _>("name").unwrap(),
                             statement.read::<String, _>("surname").unwrap(),
                             statement.read::<String, _>("password").unwrap(),
-                            Duration::from_millis(
-                                statement.read::<i64, _>("last_active").unwrap() as u64
-                            ),
+                            statement.read::<i64, _>("last_active").unwrap(),
                         ))
                     }
                 }
@@ -409,7 +407,7 @@ impl Inserter for SQLite {
         password: &str,
     ) -> Result<entities::UserID, DatabaseError> {
         let query =
-        "INSERT INTO users(name, surname, password) VALUES(:name,:surname,:password) RETURNING id";
+        "INSERT INTO users(name, surname, password, last_active) VALUES(:name,:surname,:password,unixepoch()) RETURNING id";
 
         match self.handler.prepare(query) {
             Ok(mut statement) => match statement.bind_iter([
@@ -518,18 +516,7 @@ impl Inserter for SQLite {
     /// }
     /// ```    
     fn update_last_activity(&self, user_id: entities::UserID) -> Option<DatabaseError> {
-        let query = "UPDATE messages SET last_seen = :timestamp WHERE user_id = :id";
-        let timestamp = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-
-        self.execute_parameterized(
-            query,
-            [
-                (":timestamp", timestamp.to_string().as_str()),
-                (":user_id", user_id.to_string().as_str()),
-            ],
-        )
+        let query = "UPDATE users SET last_active = unixepoch() WHERE user_id = :id";
+        self.execute_parameterized(query, [(":user_id", user_id.to_string().as_str())])
     }
 }

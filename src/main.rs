@@ -1,12 +1,15 @@
 use axum::{
     extract::{Json, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
 use rand::random;
-use std::collections::HashMap;
+use serde_json::json;
 use std::string::String;
 use std::sync::{Arc, Mutex};
+use std::{collections::HashMap, time::SystemTime};
 
 mod db;
 use db::{drivers::SQLite, Inserter, Retriever};
@@ -14,10 +17,15 @@ use std::fs::File;
 
 const DB_PATH: &'static str = "/tmp/test.db";
 
+fn unixepoch() -> i64 {
+    SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64
+}
+
 /// Contains all shared state of the server and implements core logic
 pub struct App<T: Retriever + Inserter> {
     storage: Mutex<T>,
-    sessions: Mutex<HashMap<i64, i64>>,
+    //                      sid   time uid
+    sessions: Mutex<HashMap<i64, (i64, i64)>>,
 }
 
 impl<T> App<T>
@@ -35,13 +43,14 @@ where
         let Some(uid_ref) = sessions.get(&sid) else {
             return None;
         };
-        Some(uid_ref.clone())
+        Some(uid_ref.1.clone())
     }
     /// Registers a new user to the database
-    fn register(&self, name: &str, surname: &str, password: &str) -> Option<()> {
+    fn register(&self, name: &str, surname: &str, password: &str) -> Option<i64> {
         if let Ok(conn) = self.storage.lock() {
-            if let Ok(_) = conn.create_user(name, surname, password) {
-                return Some(());
+            if let Ok(id) = conn.create_user(name, surname, password) {
+                conn.update_last_activity(id);
+                return Some(id);
             }
         }
         None
@@ -80,9 +89,9 @@ where
         if let Ok(conn) = self.storage.lock() {
             if let Ok(user) = conn.get_user(id) {
                 if user.password.eq(password) {
-                    let session_id = random::<i64>();
+                    let session_id = random::<i32>() as i64;
                     let mut sessions = self.sessions.lock().unwrap();
-                    sessions.insert(session_id, id);
+                    sessions.insert(session_id, (unixepoch(), id));
                     return Some(session_id);
                 }
             }
@@ -90,13 +99,38 @@ where
         None
     }
 
-    fn set_activity(&self, id: i64) -> Option<()> {
+    fn set_activity(&self, sid: i64) -> Option<()> {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            if let Some(v) = sessions.get_mut(&sid) {
+                v.0 = unixepoch();
+            };
+        }
         if let Ok(conn) = self.storage.lock() {
-            if let None = conn.update_last_activity(id) {
+            if let None = conn.update_last_activity(sid) {
                 return Some(());
             };
         }
         None
+    }
+
+    fn is_active(&self, id: i64) -> Option<bool> {
+        if let Ok(sessions) = self.sessions.lock() {
+            match sessions.values().find(|e| (**e).1 == id) {
+                Some(_) => Some(true),
+                None => Some(false),
+            }
+        } else {
+            None
+        }
+    }
+
+    fn logout(&self, sid: i64) -> Option<()> {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.remove(&sid);
+            Some(())
+        } else {
+            None
+        }
     }
 }
 impl App<SQLite> {
@@ -123,27 +157,13 @@ impl App<SQLite> {
 /// [handler] GET /users
 ///
 /// Returns: {schema}
-async fn g_users<T: Retriever + Inserter>(State(state): State<Arc<App<T>>>) -> String {
-    let mut sb = String::new();
+async fn g_users<T: Retriever + Inserter>(State(state): State<Arc<App<T>>>) -> Response {
     let db = state.storage.lock().unwrap();
     if let Ok(list) = db.get_users() {
-        sb.push_str(r#"{"users":["#);
-        for e in list.iter() {
-            sb.push_str(
-                format!(
-                    r#"{{"user_id":{},"name":"{}","surname":"{}"}},"#,
-                    e.id, e.name, e.surname
-                )
-                .as_str(),
-            );
-        }
-        // Remove trailing ','
-        if !list.is_empty() {
-            sb.pop();
-        }
-        sb.push_str(r#"]}"#);
+        (StatusCode::OK, Json(json!({"users": list}))).into_response()
+    } else {
+        (StatusCode::NOT_FOUND).into_response()
     }
-    sb
 }
 
 /// [handler] GET /chats
@@ -152,33 +172,18 @@ async fn g_users<T: Retriever + Inserter>(State(state): State<Arc<App<T>>>) -> S
 async fn g_chats<T: Retriever + Inserter>(
     State(state): State<Arc<App<T>>>,
     Query(params): Query<HashMap<String, String>>,
-) -> String {
-    let mut sb = String::new();
+) -> Response {
     let db = state.storage.lock().unwrap();
-    let se = String::from(r#"{"status":"Err"}"#);
     let Some(sid) = params.get("session_id") else {
-        return se;
+        return (StatusCode::BAD_REQUEST).into_response();
     };
     let Some(uid) = state.session_validate_str(sid) else {
-        return se;
+        return (StatusCode::UNAUTHORIZED).into_response();
     };
     if let Ok(list) = db.get_chats(uid) {
-        sb.push_str(r#"{"chats":["#);
-        for e in &list {
-            sb.push_str(
-                format!(
-                    r#"{{"chat_id":{},"title":"{}","description":"{}"}},"#,
-                    e.id, e.title, e.description
-                )
-                .as_str(),
-            );
-        }
-        if !list.is_empty() {
-            sb.pop();
-        } // Remove trailing ','
-        sb.push_str(r#"]}"#);
+        return (StatusCode::OK, Json(json!({"chats": list}))).into_response();
     }
-    sb
+    (StatusCode::NOT_FOUND).into_response()
 }
 
 /// [handler] GET /messages
@@ -187,33 +192,18 @@ async fn g_chats<T: Retriever + Inserter>(
 async fn g_messages<T: Retriever + Inserter>(
     State(state): State<Arc<App<T>>>,
     Query(params): Query<HashMap<String, String>>,
-) -> String {
-    let mut sb = String::new();
+) -> Response {
     let db = state.storage.lock().unwrap();
-    let se = String::from(r#"{"status":"Err"}"#);
     let Some(cid_str) = params.get("chat_id") else {
-        return se;
+        return (StatusCode::BAD_REQUEST).into_response();
     };
     let Ok(cid) = i64::from_str_radix(cid_str.as_str(), 10) else {
-        return se;
+        return (StatusCode::BAD_REQUEST).into_response();
     };
     if let Ok(list) = db.get_messages(cid) {
-        sb.push_str(r#"{"messages":["#);
-        for e in &list {
-            sb.push_str(
-                format!(
-                    r#"{{"chat_id":{},"user_id":{},"content":"{}"}},"#,
-                    e.chat_id, e.user_id, e.content
-                )
-                .as_str(),
-            );
-        }
-        if !list.is_empty() {
-            sb.pop();
-        } // Remove trailing ','
-        sb.push_str(r#"]}"#);
+        return (StatusCode::OK, Json(json!({"messages": list}))).into_response();
     }
-    sb
+    (StatusCode::BAD_REQUEST).into_response()
 }
 
 /// [handler] GET /devices
@@ -222,29 +212,18 @@ async fn g_messages<T: Retriever + Inserter>(
 async fn g_devices<T: Retriever + Inserter>(
     State(state): State<Arc<App<T>>>,
     Query(params): Query<HashMap<String, String>>,
-) -> String {
-    let mut sb = String::new();
+) -> Response {
     let db = state.storage.lock().unwrap();
-    let se = String::from(r#"{"status":"Err"}"#);
     let Some(sid) = params.get("session_id") else {
-        return se;
+        return (StatusCode::BAD_REQUEST).into_response();
     };
     let Some(uid) = state.session_validate_str(sid) else {
-        return se;
+        return (StatusCode::BAD_REQUEST).into_response();
     };
     if let Ok(list) = db.get_devices(uid) {
-        sb.push_str(r#"{"devices":["#);
-        for e in &list {
-            sb.push_str(
-                format!(r#"{{"name":"{}","is_active":{}}},"#, e.name, e.is_active).as_str(),
-            );
-        }
-        if !list.is_empty() {
-            sb.pop();
-        } // Remove trailing ','
-        sb.push_str(r#"]}"#);
+        return (StatusCode::OK, Json(json!({"devices": list}))).into_response();
     }
-    sb
+    (StatusCode::BAD_REQUEST).into_response()
 }
 
 /// [handler] POST /register
@@ -253,14 +232,14 @@ async fn g_devices<T: Retriever + Inserter>(
 async fn p_register<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
     Json(payload): Json<serde_json::Value>,
-) -> &'static str {
+) -> Response {
     if let (Some(name), Some(password)) = (payload["name"].as_str(), payload["password"].as_str()) {
-        if let Some(()) = state.register(name, payload["surname"].as_str().unwrap_or("?"), password)
+        if let Some(id) = state.register(name, payload["surname"].as_str().unwrap_or("?"), password)
         {
-            return r#"{"status":"Ok"}"#;
+            return (StatusCode::OK, Json(json!({"user_id": id}))).into_response();
         }
     }
-    r#"{"status":"Err"}"#
+    return (StatusCode::BAD_REQUEST).into_response();
 }
 
 /// [handler] POST /register
@@ -269,17 +248,30 @@ async fn p_register<T: Retriever + Inserter>(
 async fn p_login<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
     Json(payload): Json<serde_json::Value>,
-) -> String {
-    if let (Some(id_str), Some(password)) =
-        (payload["user_id"].as_str(), payload["password"].as_str())
+) -> Response {
+    if let (Some(id), Some(password)) = (payload["user_id"].as_i64(), payload["password"].as_str())
     {
-        if let Ok(id) = i64::from_str_radix(id_str, 10) {
-            if let Some(session_id) = state.login(id, password) {
-                return format!(r#"{{"status":"Ok", "session_id": {}}}"#, session_id);
-            }
+        if let Some(session_id) = state.login(id, password) {
+            return (
+                StatusCode::OK,
+                Json(json!({"session_id": session_id, "user_id": id})),
+            )
+                .into_response();
         }
     }
-    String::from(r#"{"status":"Err"}"#)
+    (StatusCode::UNAUTHORIZED).into_response()
+}
+
+async fn g_active<T: Retriever + Inserter>(
+    State(state): State<Arc<App<SQLite>>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Response {
+    if let Some(id) = payload["user_id"].as_i64() {
+        if let Some(b) = state.is_active(id) {
+            return (StatusCode::OK, Json(json!({"active": b}))).into_response();
+        }
+    }
+    (StatusCode::BAD_REQUEST).into_response()
 }
 
 /// [handler] POST /invite
@@ -289,27 +281,20 @@ async fn p_invite<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
     Query(params): Query<HashMap<String, String>>,
     Json(payload): Json<serde_json::Value>,
-) -> &'static str {
-    if let (Some(sid), Some(target_str), Some(chat_id_str)) = (
+) -> Response {
+    if let (Some(sid), Some(target), Some(chat_id)) = (
         params.get("session_id"),
-        payload["user_id"].as_str(),
-        payload["chat_id"].as_str(),
+        payload["user_id"].as_i64(),
+        payload["chat_id"].as_i64(),
     ) {
-        let se = r#"{"status":"Err"}"#;
         let Some(_) = state.session_validate_str(sid) else {
-            return se;
-        };
-        let Ok(target) = i64::from_str_radix(target_str, 10) else {
-            return se;
-        };
-        let Ok(chat_id) = i64::from_str_radix(chat_id_str, 10) else {
-            return se;
+            return (StatusCode::UNAUTHORIZED).into_response();
         };
         if let Some(()) = state.invite(target, chat_id) {
-            return r#"{"status":"Ok"}"#;
+            return (StatusCode::OK).into_response();
         }
     }
-    r#"{"status":"Err"}"#
+    (StatusCode::BAD_REQUEST).into_response()
 }
 
 /// [handler] POST /create
@@ -319,22 +304,39 @@ async fn p_create<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
     Query(params): Query<HashMap<String, String>>,
     Json(payload): Json<serde_json::Value>,
-) -> &'static str {
+) -> Response {
     if let (Some(sid), Some(title), Some(description)) = (
         params.get("session_id"),
         payload["title"].as_str(),
         payload["description"].as_str(),
     ) {
-        let se = r#"{"status":"Err"}"#;
         let Some(uid) = state.session_validate_str(sid) else {
-            return se;
+            return (StatusCode::UNAUTHORIZED).into_response();
         };
         if let Some(chat_id) = state.create_chat(title, description) {
             state.invite(uid, chat_id);
-            return r#"{"status":"Ok"}"#;
+            return (StatusCode::OK).into_response();
         }
     }
-    r#"{"status":"Err"}"#
+    (StatusCode::BAD_REQUEST).into_response()
+}
+
+async fn p_logout<T: Retriever + Inserter>(
+    State(state): State<Arc<App<SQLite>>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    if let Some(sid_str) = params.get("session_id") {
+        let Some(_) = state.session_validate_str(sid_str) else {
+            return (StatusCode::UNAUTHORIZED).into_response();
+        };
+        let Ok(sid) = i64::from_str_radix(sid_str, 10) else {
+            return (StatusCode::BAD_REQUEST).into_response();
+        };
+        if let Some(_) = state.logout(sid) {
+            return (StatusCode::OK).into_response();
+        }
+    }
+    return (StatusCode::BAD_REQUEST).into_response();
 }
 
 /// [handler] POST /message
@@ -344,38 +346,35 @@ async fn p_message<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
     Query(params): Query<HashMap<String, String>>,
     Json(payload): Json<serde_json::Value>,
-) -> &'static str {
-    if let (Some(sid), Some(chat_id_str), Some(content)) = (
+) -> Response {
+    if let (Some(sid), Some(chat_id), Some(content)) = (
         params.get("session_id"),
-        payload["chat_id"].as_str(),
+        payload["chat_id"].as_i64(),
         payload["content"].as_str(),
     ) {
         let Some(uid) = state.session_validate_str(sid) else {
-            return r#"{"status":"Err", "code":3}"#;
-        };
-        let Ok(chat_id) = i64::from_str_radix(chat_id_str, 10) else {
-            return r#"{"status":"Err", "code":4}"#;
+            return (StatusCode::UNAUTHORIZED).into_response();
         };
         if let Some(()) = state.message(uid, chat_id, content) {
-            return r#"{"status":"Ok"}"#;
+            return (StatusCode::OK).into_response();
         }
     }
-    r#"{"status":"Err", "code":0}"#
+    (StatusCode::BAD_REQUEST).into_response()
 }
 
 async fn p_heartbeat<T: Retriever + Inserter>(
     State(state): State<Arc<App<SQLite>>>,
     Query(params): Query<HashMap<String, String>>,
-) -> &'static str {
+) -> Response {
     if let Some(sid) = params.get("session_id") {
         let Some(uid) = state.session_validate_str(sid) else {
-            return r#"{"status":"Err", "code":3}"#;
+            return (StatusCode::UNAUTHORIZED).into_response();
         };
         if let Some(()) = state.set_activity(uid) {
-            return r#"{"status":"Ok"}"#;
+            return (StatusCode::OK).into_response();
         }
     }
-    r#"{"status":"Err", "code":0}"#
+    (StatusCode::BAD_REQUEST).into_response()
 }
 
 #[tokio::main]
@@ -383,15 +382,22 @@ async fn main() {
     let app = Arc::new(App::new_debug());
     let router = Router::new()
         .route("/users", get(g_users::<SQLite>))
+        .route("/getUsers", get(g_users::<SQLite>))
         .route("/chats", get(g_chats::<SQLite>))
         .route("/messages", get(g_messages::<SQLite>))
+        .route("/messages", post(g_messages::<SQLite>))
         .route("/devices", get(g_devices::<SQLite>))
         .route("/register", post(p_register::<SQLite>))
         .route("/login", post(p_login::<SQLite>))
+        .route("/logout", get(p_logout::<SQLite>))
+        .route("/logout", post(p_logout::<SQLite>))
         .route("/message", post(p_message::<SQLite>))
         .route("/invite", post(p_invite::<SQLite>))
         .route("/create", post(p_create::<SQLite>))
         .route("/heartbeat", post(p_heartbeat::<SQLite>))
+        .route("/sendActivity", post(p_heartbeat::<SQLite>))
+        .route("/getActivity", get(g_active::<SQLite>))
+        .route("/getActivity", post(g_active::<SQLite>))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3030")
         .await
