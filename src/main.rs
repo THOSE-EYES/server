@@ -274,6 +274,26 @@ async fn g_active<T: Retriever + Inserter>(
     (StatusCode::BAD_REQUEST).into_response()
 }
 
+#[allow(dead_code)]
+async fn g_active_sec<T: Retriever + Inserter>(
+    State(state): State<Arc<App<SQLite>>>,
+    Json(payload): Json<serde_json::Value>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    if let (Some(sid_str), Some(id)) = (params.get("session_id"), payload["user_id"].as_i64()) {
+        let Some(_) = state.session_validate_str(sid_str) else {
+            return (StatusCode::UNAUTHORIZED).into_response();
+        };
+        let Ok(_) = i64::from_str_radix(sid_str, 10) else {
+            return (StatusCode::BAD_REQUEST).into_response();
+        };
+        if let Some(b) = state.is_active(id) {
+            return (StatusCode::OK, Json(json!({"active": b}))).into_response();
+        }
+    }
+    (StatusCode::BAD_REQUEST).into_response()
+}
+
 /// [handler] POST /invite
 ///
 /// Returns: {schema}
