@@ -1,3 +1,4 @@
+use auth::Session;
 use axum::{
     extract::{Json, Query, State},
     http::StatusCode,
@@ -11,8 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, time::SystemTime};
 use std::{hash::Hash, string::String};
 
+mod auth;
 mod db;
 mod utils;
+
 use db::{drivers::SQLite, Inserter, Retriever};
 use std::fs::File;
 
@@ -22,7 +25,7 @@ const DB_PATH: &'static str = "/tmp/test.db";
 pub struct App<T: Retriever + Inserter> {
     storage: Mutex<T>,
     //                      sid   time uid
-    sessions: Mutex<HashMap<i64, (i64, i64)>>,
+    sessions: Mutex<HashMap<i64, Session>>,
 }
 
 impl<T> App<T>
@@ -40,7 +43,7 @@ where
         let Some(uid_ref) = sessions.get(&sid) else {
             return None;
         };
-        Some(uid_ref.1.clone())
+        Some(uid_ref.user_id)
     }
     /// Registers a new user to the database
     fn register(&self, name: &str, surname: &str, password: &str) -> Option<i64> {
@@ -66,7 +69,7 @@ where
                 if user.password.eq(phash.as_str()) {
                     let session_id = random::<i32>() as i64;
                     let mut sessions = self.sessions.lock().unwrap();
-                    sessions.insert(session_id, (unixepoch(), id));
+                    sessions.insert(session_id, Session::new(id, utils::unixepoch()));
                     return Some(session_id);
                 }
             }
@@ -102,11 +105,11 @@ where
         }
         None
     }
-  
+
     fn set_activity(&self, sid: i64) -> Option<()> {
         if let Ok(mut sessions) = self.sessions.lock() {
             if let Some(v) = sessions.get_mut(&sid) {
-                v.0 = utils::unixepoch();
+                v.timestamp = utils::unixepoch();
             };
         }
         if let Ok(conn) = self.storage.lock() {
@@ -119,7 +122,7 @@ where
 
     fn is_active(&self, id: i64) -> Option<bool> {
         if let Ok(sessions) = self.sessions.lock() {
-            match sessions.values().find(|e| (**e).1 == id) {
+            match sessions.values().find(|e| (**e).user_id == id) {
                 Some(_) => Some(true),
                 None => Some(false),
             }
@@ -138,11 +141,11 @@ where
     }
 
     fn reaper(&self) {
-        let t = unixepoch();
+        let t = utils::unixepoch();
         let mut sessions = self.sessions.lock().unwrap();
         let v: Vec<i64> = sessions
             .iter()
-            .filter(|e| (e.1).0 + 90 < t)
+            .filter(|e| (e.1).timestamp + 90 < t)
             .map(|e| *e.0)
             .collect();
         for e in v {
