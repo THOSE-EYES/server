@@ -595,11 +595,12 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "blake3",
  "rand",
+ "serde",
  "serde_json",
  "sqlite",
  "tokio",

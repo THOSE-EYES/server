@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
@@ -5,12 +6,15 @@ pub use i64 as ChatID;
 pub use i64 as UserID;
 
 /// A struture that mirrors the Users table in the database
+#[derive(Serialize)]
 pub struct User {
     pub id: UserID,
     pub name: String,
     pub surname: String,
+    #[serde(skip)]
     pub password: String,
-    pub last_active: Duration,
+    #[serde(skip)]
+    pub last_active: i64,
 }
 
 impl User {
@@ -20,7 +24,7 @@ impl User {
         name: String,
         surname: String,
         password: String,
-        last_active: Duration,
+        last_active: i64,
     ) -> User {
         User {
             id,
@@ -33,6 +37,7 @@ impl User {
 }
 
 /// A struture that mirrors the Chats table in the database
+#[derive(Serialize)]
 pub struct Chat {
     pub id: ChatID,
     pub title: String,
@@ -51,6 +56,7 @@ impl Chat {
 }
 
 /// A struture that mirrors the Invitations table in the database
+#[derive(Serialize)]
 pub struct Invitation {
     pub chat_id: ChatID,
     pub user_id: UserID,
@@ -64,6 +70,7 @@ impl Invitation {
 }
 
 /// A struture that mirrors the Devices table in the database
+#[derive(Serialize)]
 pub struct Device {
     user_id: UserID,
     pub ip: Ipv4Addr,
@@ -84,6 +91,7 @@ impl Device {
 }
 
 /// A struture that mirrors the Messages table in the database
+#[derive(Serialize)]
 pub struct Message {
     pub content: String,
     pub timestamp: Duration,
