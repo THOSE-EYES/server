@@ -144,6 +144,7 @@ pub trait Inserter {
         name: &str,
         surname: &str,
         password: &str,
+        salt: &str,
     ) -> Result<entities::UserID, DatabaseError>;
 
     /// Create a new chat

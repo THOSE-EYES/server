@@ -14,6 +14,8 @@ pub struct User {
     #[serde(skip)]
     pub password: String,
     #[serde(skip)]
+    pub salt: String,
+    #[serde(skip)]
     pub last_active: i64,
 }
 
@@ -24,6 +26,7 @@ impl User {
         name: String,
         surname: String,
         password: String,
+        salt: String,
         last_active: i64,
     ) -> User {
         User {
@@ -31,6 +34,7 @@ impl User {
             name,
             surname,
             password,
+            salt,
             last_active,
         }
     }
