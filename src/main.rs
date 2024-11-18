@@ -7,19 +7,16 @@ use axum::{
 };
 use rand::random;
 use serde_json::json;
+use std::collections::HashMap;
 use std::string::String;
 use std::sync::{Arc, Mutex};
-use std::{collections::HashMap, time::SystemTime};
 
 mod db;
+mod utils;
 use db::{drivers::SQLite, Inserter, Retriever};
 use std::fs::File;
 
 const DB_PATH: &'static str = "/tmp/test.db";
-
-fn unixepoch() -> i64 {
-    SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64
-}
 
 /// Contains all shared state of the server and implements core logic
 pub struct App<T: Retriever + Inserter> {
@@ -91,7 +88,7 @@ where
                 if user.password.eq(password) {
                     let session_id = random::<i32>() as i64;
                     let mut sessions = self.sessions.lock().unwrap();
-                    sessions.insert(session_id, (unixepoch(), id));
+                    sessions.insert(session_id, (utils::unixepoch(), id));
                     return Some(session_id);
                 }
             }
@@ -102,7 +99,7 @@ where
     fn set_activity(&self, sid: i64) -> Option<()> {
         if let Ok(mut sessions) = self.sessions.lock() {
             if let Some(v) = sessions.get_mut(&sid) {
-                v.0 = unixepoch();
+                v.0 = utils::unixepoch();
             };
         }
         if let Ok(conn) = self.storage.lock() {
