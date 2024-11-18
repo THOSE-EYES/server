@@ -12,14 +12,11 @@ use std::{collections::HashMap, time::SystemTime};
 use std::{hash::Hash, string::String};
 
 mod db;
+mod utils;
 use db::{drivers::SQLite, Inserter, Retriever};
 use std::fs::File;
 
 const DB_PATH: &'static str = "/tmp/test.db";
-
-fn unixepoch() -> i64 {
-    SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64
-}
 
 /// Contains all shared state of the server and implements core logic
 pub struct App<T: Retriever + Inserter> {
@@ -105,11 +102,11 @@ where
         }
         None
     }
-
+  
     fn set_activity(&self, sid: i64) -> Option<()> {
         if let Ok(mut sessions) = self.sessions.lock() {
             if let Some(v) = sessions.get_mut(&sid) {
-                v.0 = unixepoch();
+                v.0 = utils::unixepoch();
             };
         }
         if let Ok(conn) = self.storage.lock() {
@@ -137,6 +134,19 @@ where
             Some(())
         } else {
             None
+        }
+    }
+
+    fn reaper(&self) {
+        let t = unixepoch();
+        let mut sessions = self.sessions.lock().unwrap();
+        let v: Vec<i64> = sessions
+            .iter()
+            .filter(|e| (e.1).0 + 90 < t)
+            .map(|e| *e.0)
+            .collect();
+        for e in v {
+            sessions.remove(&e);
         }
     }
 }
@@ -404,6 +414,13 @@ async fn p_heartbeat<T: Retriever + Inserter>(
 #[tokio::main]
 async fn main() {
     let app = Arc::new(App::new_debug());
+
+    // Start the reaper thread which checks if heartbeats are sent
+    let clone = app.clone();
+    let _thread = tokio::task::spawn(async move {
+        clone.reaper();
+    });
+
     let router = Router::new()
         .route("/users", get(g_users::<SQLite>))
         .route("/getUsers", get(g_users::<SQLite>))
@@ -423,8 +440,6 @@ async fn main() {
         .route("/getActivity", get(g_active_sec::<SQLite>))
         .route("/getActivity", post(g_active_sec::<SQLite>))
         .with_state(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3030")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3030").await.unwrap();
     axum::serve(listener, router).await.unwrap();
 }
