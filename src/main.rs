@@ -132,6 +132,19 @@ where
             None
         }
     }
+
+    fn reaper(&self) {
+        let t = unixepoch();
+        let mut sessions = self.sessions.lock().unwrap();
+        let v: Vec<i64> = sessions
+            .iter()
+            .filter(|e| (e.1).0 + 90 < t)
+            .map(|e| *e.0)
+            .collect();
+        for e in v {
+            sessions.remove(&e);
+        }
+    }
 }
 impl App<SQLite> {
     /// Creates a new App based on an existing database.
@@ -380,6 +393,13 @@ async fn p_heartbeat<T: Retriever + Inserter>(
 #[tokio::main]
 async fn main() {
     let app = Arc::new(App::new_debug());
+
+    // Start the reaper thread which checks if heartbeats are sent
+    let clone = app.clone();
+    let _thread = tokio::task::spawn(async move {
+        clone.reaper();
+    });
+
     let router = Router::new()
         .route("/users", get(g_users::<SQLite>))
         .route("/getUsers", get(g_users::<SQLite>))
